@@ -13,7 +13,7 @@ export const SCREEN_BUSTED = 'busted';
 export const SCREEN_WASTED = 'wasted';
 export const SCREEN_COMPLETE = 'complete';
 
-const PANEL = { width: 640, top: 150, line: 32, bottom: 76 };
+const PANEL = { width: 720, top: 150, line: 32, bottom: 76 };
 const MINIMAP = { x: VIEW.width - 234, y: 64, w: 210, h: 132 };
 
 function starPath(ctx, x, y, r) {

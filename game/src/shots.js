@@ -8,13 +8,13 @@ import { EVENT_BUSTED } from './world.js';
 import { SCREEN_BUSTED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
 const START_SECONDS = 6;
-const DRIVE_SECONDS = 26;
-const CHASE_SECONDS = 14;
+const DRIVE_SECONDS = 3;
+const CHASE_SECONDS = 3;
 const END_LIMIT_SECONDS = 45;
 const ACTION_ENTER = 4;
 
 function clamp(value, min, max) {
-  return value < min ? min : value > max ? value : value;
+  return value < min ? min : value > max ? max : value;
 }
 
 function angleDiff(a, b) {
@@ -29,18 +29,28 @@ function driveInput(car, tx, ty) {
   const desired = Math.atan2(ty - car.y, tx - car.x);
   const diff = angleDiff(desired, car.angle);
   const steer = clamp(diff * 1.8, -1, 1);
-  let throttle = -1;
-  if (Math.abs(diff) > 2.2) throttle = 1;
-  else if (Math.abs(diff) > 1.2) throttle = 0;
+  // Forward while turning: a stationary car with no steering authority can
+  // never line up on a sideways target, so creep forward and arc onto it.
+  const throttle = Math.abs(diff) > 2.2 ? 1 : -1;
   return { x: steer, y: throttle };
 }
 
-/** Walking input toward a point on the map. */
-function walkInput(px, py, tx, ty) {
-  const dx = tx - px;
-  const dy = ty - py;
-  const len = Math.hypot(dx, dy) || 1;
-  return { x: dx / len, y: dy / len };
+/** Put the player in a fresh car at a spot on the map, facing east. */
+function placePlayerInCar(world, x, y, hp) {
+  const state = world.state;
+  const p = state.player;
+  const car = {
+    id: state.cars.length, kind: 'parked', road: null, axis: null, dir: 0, lane: 0,
+    x, y, angle: 0, speed: 0, cruise: 0,
+    hp: hp === undefined ? 100 : hp, color: '#c94f2a', wrecked: false, ramTimer: 0,
+  };
+  state.cars.push(car);
+  p.inCar = true;
+  p.car = car;
+  p.x = car.x;
+  p.y = car.y;
+  p.angle = car.angle;
+  return car;
 }
 
 function aimAt(p, tx, ty) {
@@ -63,93 +73,63 @@ export function stageShot(name, world) {
 
   if (name === 'drive') {
     world.reset();
-    const carMarker = { x: 1000, y: 618 };
+    // Start already on Route 9 at the west end: the shot is the highway drive
+    // itself, not the tight turn out of the gas-station forecourt.
+    const car = placePlayerInCar(world, 420, 700, 100);
     const motel = { x: 1445, y: 625 };
-    let entered = false;
     for (let i = 0; i < DRIVE_SECONDS / STEP; i += 1) {
       const p = state.player;
-      let move = { x: 0, y: 0 };
-      let actions = 0;
-      let aim = { x: p.x, y: p.y };
-      if (!entered) {
-        move = walkInput(p.x, p.y, carMarker.x, carMarker.y);
-        aim = aimAt(p, carMarker.x, carMarker.y);
-        if (Math.hypot(carMarker.x - p.x, carMarker.y - p.y) < 60) actions = ACTION_ENTER;
-        if (p.inCar) entered = true;
-      } else {
-        move = driveInput(p.car, motel.x, motel.y);
-        aim = aimAt(p, motel.x, motel.y);
-      }
-      world.step(STEP, move, aim, false, actions);
+      // East along the highway, weaving a little to look alive.
+      const ahead = p.car.x + 600;
+      const weave = 700 + Math.sin(state.time * 0.7) * 36;
+      const move = driveInput(p.car, ahead, weave);
+      const aim = aimAt(p, motel.x, motel.y);
+      world.step(STEP, move, aim, false, 0);
     }
     return { screen: SCREEN_PLAY, best: state.player.cash };
   }
 
   if (name === 'chase') {
     world.reset();
-    const carMarker = { x: 1000, y: 618 };
-    let entered = false;
+    const car = placePlayerInCar(world, 420, 700, 250);
+    const p = state.player;
+    p.wanted = 4;
+    p.quietTime = 0;
+    // Two patrol cars already on the player's tail, so the chase reads in frame.
+    for (const [dx, laneY] of [[-220, 676], [-280, 724]]) {
+      state.cars.push({
+        id: state.cars.length, kind: 'police', road: null, axis: null, dir: 0, lane: 0,
+        x: car.x + dx, y: laneY, angle: 0, speed: 300, cruise: 0,
+        hp: 95, color: '#2e4a7a', wrecked: false, ramTimer: 0,
+      });
+    }
     for (let i = 0; i < CHASE_SECONDS / STEP; i += 1) {
-      const p = state.player;
-      let move = { x: 0, y: 0 };
-      let actions = 0;
-      if (!entered) {
-        move = walkInput(p.x, p.y, carMarker.x, carMarker.y);
-        if (Math.hypot(carMarker.x - p.x, carMarker.y - p.y) < 60) actions = ACTION_ENTER;
-        if (p.inCar) {
-          entered = true;
-          p.wanted = 4;
-          p.quietTime = 0;
-        }
-      } else {
-        // East along the highway, weaving a little to look alive.
-        const ahead = p.car.x + 700;
-        const weave = 700 + Math.sin(state.time * 0.9) * 55;
-        move = driveInput(p.car, ahead, weave);
-      }
-      world.step(STEP, move, { x: p.x + 400, y: p.y }, false, actions);
+      // East along Route 9, weaving a little to look alive.
+      const ahead = p.car.x + 600;
+      const weave = 700 + Math.sin(state.time * 0.9) * 40;
+      const move = driveInput(p.car, ahead, weave);
+      world.step(STEP, move, { x: p.x + 400, y: p.y }, false, 0);
     }
     return { screen: SCREEN_PLAY, best: state.player.cash };
   }
 
   // end: a roadblock on the highway, the getaway car already hurt, no evasion.
   world.reset();
-  const carMarker = { x: 1000, y: 618 };
-  let entered = false;
-  let roadblock = false;
+  const car = placePlayerInCar(world, 600, 700, 20);
+  const p = state.player;
+  p.wanted = 5;
+  p.quietTime = 0;
+  for (const offsetY of [664, 690, 716, 742, 768]) {
+    state.cars.push({
+      id: state.cars.length, kind: 'parked', road: null, axis: null, dir: 0, lane: 0,
+      x: car.x + 280, y: offsetY, angle: Math.PI, speed: 0, cruise: 0,
+      hp: 95, color: '#2e4a7a', wrecked: false, ramTimer: 0, fixed: true,
+    });
+  }
   let busted = false;
   for (let i = 0; i < END_LIMIT_SECONDS / STEP; i += 1) {
-    const p = state.player;
-    let move = { x: 0, y: 0 };
-    let actions = 0;
-    if (!entered) {
-      move = walkInput(p.x, p.y, carMarker.x, carMarker.y);
-      if (Math.hypot(carMarker.x - p.x, carMarker.y - p.y) < 60) actions = ACTION_ENTER;
-      if (p.inCar) {
-        entered = true;
-        p.car.hp = 25;
-        p.wanted = 5;
-        p.quietTime = 0;
-      }
-    } else {
-      if (!roadblock) {
-        roadblock = true;
-        for (const offset of [380, 420]) {
-          state.cars.push({
-            id: state.cars.length, kind: 'police', road: null, axis: null, dir: 0, lane: 0,
-            x: p.car.x + offset, y: 676, angle: Math.PI, speed: 0, cruise: 0,
-            hp: 95, color: '#2e4a7a', wrecked: false, ramTimer: 0,
-          });
-        }
-        state.cars.push({
-          id: state.cars.length, kind: 'police', road: null, axis: null, dir: 0, lane: 0,
-          x: p.car.x + 400, y: 724, angle: Math.PI, speed: 0, cruise: 0,
-          hp: 95, color: '#2e4a7a', wrecked: false, ramTimer: 0,
-        });
-      }
-      move = driveInput(p.car, p.car.x + 800, 700);
-    }
-    const events = world.step(STEP, move, { x: p.x + 400, y: p.y }, false, actions);
+    const move = driveInput(p.car, p.car.x + 800, 700);
+    const events = world.step(STEP, move, { x: p.x + 400, y: p.y }, false, 0);
     if (events & EVENT_BUSTED) {
       busted = true;
       break;

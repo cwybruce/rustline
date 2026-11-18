@@ -18,7 +18,7 @@ export const EVENT_SHOT = 32;
 export const EVENT_CRIME = 64;
 
 function clamp(value, min, max) {
-  return value < min ? min : value > max ? value : value;
+  return value < min ? min : value > max ? max : value;
 }
 
 function angleDiff(a, b) {
@@ -241,7 +241,7 @@ export function createWorld(random) {
     const p = state.player;
     const car = p.car;
     const speed = car.speed;
-    const grip = clamp(Math.abs(speed) / 220, 0, 1);
+    const grip = Math.max(clamp(Math.abs(speed) / 220, 0, 1), 0.5);
     car.angle += move.x * CAR.turnRate * (speed >= 0 ? 1 : -1) * grip * dt;
     if (move.y < 0) car.speed += CAR.accel * dt;
     else if (move.y > 0) {
@@ -366,14 +366,21 @@ export function createWorld(random) {
       const road = car.road;
       const start = car.axis === 'x' ? road.x1 : road.y1;
       const end = car.axis === 'x' ? road.x2 : road.y2;
-      // Slow down for a car ahead in the same lane.
+      // Slow down for any car ahead in the same lane (traffic, the player's
+      // car, a patrol car): without this, traffic plows into a slow car.
       let ahead = null;
       for (const other of cars) {
-        if (other === car || other.kind !== 'traffic' || other.wrecked) continue;
-        if (other.road !== road || other.dir !== car.dir || other.lane !== car.lane) continue;
-        const along = car.axis === 'x' ? other.x - car.x : other.y - car.y;
-        const gap = along * car.dir;
-        if (gap > 0 && gap < 110 && (ahead === null || gap < ahead)) ahead = gap;
+        if (other === car || other.wrecked) continue;
+        let along;
+        let lateral;
+        if (car.axis === 'x') {
+          along = (other.x - car.x) * car.dir;
+          lateral = Math.abs(other.y - (road.y1 + car.lane));
+        } else {
+          along = (other.y - car.y) * car.dir;
+          lateral = Math.abs(other.x - (road.x1 + car.lane));
+        }
+        if (along > 0 && along < 110 && lateral < 44 && (ahead === null || along < ahead)) ahead = along;
       }
       const targetSpeed = ahead === null ? car.cruise : Math.min(car.cruise, 60);
       car.speed += clamp(targetSpeed - car.speed, -300 * dt, 300 * dt);
@@ -407,16 +414,34 @@ export function createWorld(random) {
         const push = (44 - d) / 2;
         const nx = dx / d;
         const ny = dy / d;
-        a.x -= nx * push;
-        a.y -= ny * push;
-        b.x += nx * push;
-        b.y += ny * push;
+        // A fixed car (roadblock) does not move: the other car takes the full push.
+        if (a.fixed && b.fixed) {
+          // Both fixed: nothing to push.
+        } else if (a.fixed) {
+          b.x += nx * (44 - d);
+          b.y += ny * (44 - d);
+        } else if (b.fixed) {
+          a.x -= nx * (44 - d);
+          a.y -= ny * (44 - d);
+        } else {
+          a.x -= nx * push;
+          a.y -= ny * push;
+          b.x += nx * push;
+          b.y += ny * push;
+        }
         const closing = Math.abs((a.speed || 0) - (b.speed || 0));
         if (closing > 260) {
-          a.hp -= 8;
-          b.hp -= 8;
-          if (a.kind === 'traffic' && a.hp <= 0) { a.wrecked = true; a.speed = 0; }
-          if (b.kind === 'traffic' && b.hp <= 0) { b.wrecked = true; b.speed = 0; }
+          // One hard hit per pair per half second: without the cooldown a pair
+          // wedged together would take damage every step and melt in a second.
+          const now = state.time;
+          if (now - (a.lastBump || 0) > 0.5 && now - (b.lastBump || 0) > 0.5) {
+            a.hp -= 8;
+            b.hp -= 8;
+            a.lastBump = now;
+            b.lastBump = now;
+            if (a.kind === 'traffic' && a.hp <= 0) { a.wrecked = true; a.speed = 0; }
+            if (b.kind === 'traffic' && b.hp <= 0) { b.wrecked = true; b.speed = 0; }
+          }
         }
       }
     }
@@ -815,3 +840,4 @@ export function createWorld(random) {
     }
     return events;
   }
+}
